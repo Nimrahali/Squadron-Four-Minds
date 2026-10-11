@@ -1,5 +1,5 @@
 # Mission 01 — Deliverable 02: Socratic Elenchus Protocol Map
-**Station:** Protocol Specialist  
+**Station:** Protocol & Interface Specialist
 **Vessel:** USSE Noosphere — Bridge Crew Operations  
 **Course:** Conversational AI (WS 2026/27)  
 **Target Matrix:** AURA Socratic Engine State-Machine Specification  
