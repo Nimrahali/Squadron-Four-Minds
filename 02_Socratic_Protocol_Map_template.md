@@ -76,19 +76,19 @@ stateDiagram-v2
         LogicalConsistencyAudit --> CheckReductioAdAbsurdum
     }
 
-    S2_CONTRADICTION_EVAL --> S1_PROBE_ASSUMPTIONS : Consistency holds & Depth < DepthMax
-    S2_CONTRADICTION_EVAL --> S3_REFINEMENT_STAGE : Inconsistency detected (P_k ∧ Q ⊢ ⊥)
-    S2_CONTRADICTION_EVAL --> S5_TERMINATION_STABLE : Consistency holds & Depth >= DepthMax
+    S2_CONTRADICTION_EVAL --> S1_PROBE_ASSUMPTIONS : Consistency holds & Depth under Max
+    S2_CONTRADICTION_EVAL --> S3_REFINEMENT_STAGE : Contradiction detected
+    S2_CONTRADICTION_EVAL --> S5_TERMINATION_STABLE : Consistency holds & Depth reaches Max
 
     state S3_REFINEMENT_STAGE {
         [*] --> PresentContradiction
         PresentContradiction --> AwaitUserAction
-        AwaitUserAction --> ProcessRefinedClaim : User provides P_{k+1}
-        AwaitUserAction --> ProcessYieldOrSilence : User yields / Aporia
+        AwaitUserAction --> ProcessRefinedClaim : User provides refined claim
+        AwaitUserAction --> ProcessYieldOrSilence : User yields or aporia
     }
 
-    S3_REFINEMENT_STAGE --> S0_INIT_CAPTURE : P_{k+1} accepted (Loop k = k+1)
-    S3_REFINEMENT_STAGE --> S4_TERMINATION_APORIA : User unable to refine / Concedes defeat
+    S3_REFINEMENT_STAGE --> S0_INIT_CAPTURE : Refined claim accepted
+    S3_REFINEMENT_STAGE --> S4_TERMINATION_APORIA : User concedes defeat
 
     state S4_TERMINATION_APORIA {
         [*] --> SummarizeFalseCertainty
@@ -114,54 +114,54 @@ This operational flowchart illustrates the detailed control flow, including the 
 
 ```mermaid
 flowchart TD
-    Start([Cadet Transmits Statement]) --> B[S0: Claim Parser & Normalizer]
-    B --> C{Is Claim P_k a Universal / Absolute Proposition?}
+    Start(["Cadet Transmits Statement"]) --> B["S0: Claim Parser & Normalizer"]
+    B --> C{"Is Claim P_k a Universal / Absolute Proposition?"}
     
-    C -- No --> D[Request Generalization or Ethical Definition]
+    C -- "No" --> D["Request Generalization or Ethical Definition"]
     D --> Start
     
-    C -- Yes --> E[Register Hypothesis P_k into Working Memory]
-    E --> F[S1: Probing Vector Selection]
+    C -- "Yes" --> E["Register Hypothesis P_k into Working Memory"]
+    E --> F["S1: Probing Vector Selection"]
     
-    F --> G{Select Probing Mode}
-    G -- Counter-Example --> H1[Generate Extreme Edge Case / Exception]
-    G -- Scope Clarification --> H2[Query Necessary vs Accidental Condition]
-    G -- Dilemma Injection --> H3[Pose Euthyphro-style Intrinsic Dilemma]
+    F --> G{"Select Probing Mode"}
+    G -- "Counter-Example" --> H1["Generate Extreme Edge Case or Exception"]
+    G -- "Scope Clarification" --> H2["Query Necessary vs Accidental Condition"]
+    G -- "Dilemma Injection" --> H3["Pose Euthyphro-style Intrinsic Dilemma"]
     
-    H1 --> I[S1.2: Transmit Probing Query to Cadet]
+    H1 --> I["S1.2: Transmit Probing Query to Cadet"]
     H2 --> I
     H3 --> I
     
-    I --> J[Cadet Submits Response R]
-    J --> K[S2: Sycophancy Intercept Guard]
+    I --> J["Cadet Submits Response R"]
+    J --> K["S2: Sycophancy Intercept Guard"]
     
-    K --> L{Did Cadet surrender without justification?}
-    L -- Yes --> M[Reject Passive Agreement: Demand Logical Defense]
+    K --> L{"Did Cadet surrender without justification?"}
+    L -- "Yes" --> M["Reject Passive Agreement: Demand Logical Defense"]
     M --> I
     
-    L -- No --> N[Extract Auxiliary Premises Q_1 ... Q_m]
-    N --> O[S2.2: Contradiction Engine Evaluates P_k ∧ Q ⊢ ⊥]
+    L -- "No" --> N["Extract Auxiliary Premises Q_1 to Q_m"]
+    N --> O["S2.2: Contradiction Engine Evaluates Logic"]
     
-    O --> P{Contradiction Detected?}
+    O --> P{"Contradiction Detected?"}
     
-    P -- No Contradiction --> Q{Probing Depth k >= Depth_Max?}
-    Q -- No --> R[Increment Depth k = k + 1]
+    P -- "No Contradiction" --> Q{"Probing Depth k >= Depth_Max?"}
+    Q -- "No" --> R["Increment Depth: k = k + 1"]
     R --> F
-    Q -- Yes --> TermStable[S5: TERMINATION STABLE - Robust Definition Verified]
+    Q -- "Yes" --> TermStable["S5: TERMINATION STABLE - Robust Definition Verified"]
     
-    P -- Contradiction (⊥) --> S[S3: Isolate Contradiction & Request P_{k+1}]
-    S --> T{Cadet Response}
+    P -- "Contradiction Detected" --> S["S3: Isolate Contradiction & Request P_k+1"]
+    S --> T{"Cadet Response"}
     
-    T -- Concedes Defeat / Confusion --> TermAporia[S4: TERMINATION APORIA - Docta Ignorantia Achieved]
-    T -- Provides New Definition P_{k+1} --> U{Is P_{k+1} Identical to P_k?}
+    T -- "Concedes Defeat / Confusion" --> TermAporia["S4: TERMINATION APORIA - Docta Ignorantia Achieved"]
+    T -- "Provides New Definition P_k+1" --> U{"Is P_k+1 Identical to P_k?"}
     
-    U -- Yes (Tautology/Stagnation) --> V[Highlight Circularity]
+    U -- "Yes (Tautology / Stagnation)" --> V["Highlight Circularity"]
     V --> S
     
-    U -- No (Genuinely Refined) --> W[Archive P_k; Set P_k = P_{k+1}; Reset Contradiction State]
+    U -- "No (Genuinely Refined)" --> W["Archive P_k; Set P_k = P_k+1; Reset Contradiction State"]
     W --> E
 
-    TermStable --> Done([Engine Emits Certified Model])
+    TermStable --> Done(["Engine Emits Certified Model"])
     TermAporia --> Done
 ```
 
@@ -350,4 +350,3 @@ class SocraticProtocolEngine:
 - **Officer:** *Protocol Specialist, USSE Noosphere Bridge Crew*
 - **Telemetric Checksum:** `02_SOCRATIC_PROTOCOL_MAP_CERTIFIED`
 - **Downstream Dependency:** Core Architect Implementation ([04_dialogic_engine_starter.py](file:///Users/nimranasir/Documents/GITHUB/couse-c-ai-1/mission-01/04_dialogic_engine_starter.py))
-
