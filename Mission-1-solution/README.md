@@ -64,32 +64,6 @@ mission-01/
 
 ---
 
-## 🛠️ Setup & Execution Instructions
-
-### 1. Prerequisites
-Ensure you have Python 3.10+ installed along with the required API client libraries:
-
-```bash
-pip install google-genai openai anthropic python-dotenv
-```
-
-### 2. Environment Configuration
-Create a `.env` file in the root directory:
-
-```env
-GEMINI_API_KEY="your-gemini-api-key"
-OPENAI_API_KEY="your-openai-api-key"
-ANTHROPIC_API_KEY="your-anthropic-api-key"
-```
-
-### 3. Run the Socratic & Galilean Engine
-
-```bash
-python 04_dialogic_engine_starter.py
-```
-
----
-
 ## ✍️ Station Officer Sign-Off Matrix
 
 Before official transmission to the USSE Noosphere central database, all station officers have verified and digitally signed off on their respective deliverables:
