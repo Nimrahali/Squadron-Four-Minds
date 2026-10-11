@@ -1,4 +1,3 @@
-
 # Mission 01 — Deliverable 01: Dialogic Alignment Brief
 **Station:** Knowledge & Memory Archivist (Historical Archivist)  
 **Vessel:** USSE Noosphere — Bridge Crew Operations  
