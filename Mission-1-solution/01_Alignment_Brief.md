@@ -160,5 +160,4 @@ When invoking AURA via runtime orchestration (VS Code + Antigravity), wrap conve
 
 ## Transmit Verification
 - **Archivist Sign-Off:** *Knowledge & Memory Archivist, USSE Noosphere Bridge Crew*
-- **Telemetric Checksum:** `01_ALIGNMENT_BRIEF_VALIDATED_2026`
 - **Next Operational Stage:** Protocol Specialist (`02_Socratic_Protocol_Map.md`)
