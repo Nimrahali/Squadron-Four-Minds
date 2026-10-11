@@ -37,7 +37,7 @@ mission-01/
 ---
 
 ### ⚙️ Part 2: Protocol Specialist — *The Socratic State-Machine*
-* **File:** [`02_Socratic_Protocol_Map.md`](./02_Socratic_Protocol_Map.md)
+* **File:** [`02_Socratic_Protocol_Map.md`](https://github.com/Nimrahali/Squadron-Four-Minds/blob/mission-1-solution/Mission-1-solution/02_Socratic_Protocol_Map_template.md)
 * **Mathematical Formalism:** Expresses Socratic *elenchus* as a discrete state machine with premise elicitation ($\mathcal{A}_k$), contradiction operator $\mathcal{C}(\Gamma_k) \vdash \bot$, and iterative refinement operator $\mathcal{R}(P_k, \mathcal{A}_k, \bot) \to P_{k+1}$.
 * **Mermaid Architecture:**
   * **State Diagram (`stateDiagram-v2`):** Maps 6 discrete operational states (`S0_INIT_CAPTURE` through `S5_TERMINATION_STABLE`).
