@@ -37,7 +37,7 @@ mission-01/
 ---
 
 ### ⚙️ Part 2: Protocol Specialist — *The Socratic State-Machine*
-* **File:** [`02_Socratic_Protocol_Map.md`](./02_Socratic_Protocol_Map.md)
+* **File:** [`02_Socratic_Protocol_Map.md`](https://github.com/Nimrahali/Squadron-Four-Minds/blob/mission-1-solution/Mission-1-solution/02_Socratic_Protocol_Map_template.md)
 * **Mathematical Formalism:** Expresses Socratic *elenchus* as a discrete state machine with premise elicitation ($\mathcal{A}_k$), contradiction operator $\mathcal{C}(\Gamma_k) \vdash \bot$, and iterative refinement operator $\mathcal{R}(P_k, \mathcal{A}_k, \bot) \to P_{k+1}$.
 * **Mermaid Architecture:**
   * **State Diagram (`stateDiagram-v2`):** Maps 6 discrete operational states (`S0_INIT_CAPTURE` through `S5_TERMINATION_STABLE`).
@@ -61,32 +61,6 @@ mission-01/
 * **File:** [`04_dialogic_engine_starter.py`](./04_dialogic_engine_starter.py)
 * **Runtime Orchestration:** Python engine integrating state transitions, LLM API calls, and automated conversation logs.
 * **Supported Models:** Google Gemini (`gemini-1.5-pro` / `gemini-1.5-flash`), OpenAI GPT-4o, and Anthropic Claude 3.5 Sonnet.
-
----
-
-## 🛠️ Setup & Execution Instructions
-
-### 1. Prerequisites
-Ensure you have Python 3.10+ installed along with the required API client libraries:
-
-```bash
-pip install google-genai openai anthropic python-dotenv
-```
-
-### 2. Environment Configuration
-Create a `.env` file in the root directory:
-
-```env
-GEMINI_API_KEY="your-gemini-api-key"
-OPENAI_API_KEY="your-openai-api-key"
-ANTHROPIC_API_KEY="your-anthropic-api-key"
-```
-
-### 3. Run the Socratic & Galilean Engine
-
-```bash
-python 04_dialogic_engine_starter.py
-```
 
 ---
 
