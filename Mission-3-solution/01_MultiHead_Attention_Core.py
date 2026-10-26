@@ -2,8 +2,7 @@
 """
 USSE NOOSPHERE • AURA SUBSYSTEM 03 RESTORATION
 Sector: SEC-03-M45 (Pleiades Open Cluster, Seven Sisters)
-Module: Week 03 // Deck 04 // Bay 03: Modern Transformer Architectures & Divergence
-Deliverable: 01_MultiHead_Attention_Core.py
+Module: Week 03
 Role: Systems Architect (Lead Engineer) / Station Deliverable Part 1
 
 Objective:
