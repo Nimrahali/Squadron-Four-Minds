@@ -1,402 +1,86 @@
-# USSE NOOSPHERE • MISSION COMMAND SITUATION REPORT
-## Module Week 03 // Deck 04 // Bay 03: Modern Transformer Architectures and Architectural Divergence
-### Primary Station Deliverable: Security & Ethics Sentinel
-**File Target:** `04_Memory_Hierarchy_and_Safety_Audit.md`  
-**Operational Starship Unit:** USSE Noosphere (NCC-2101-A)  
-**Assigned Squadron:** Squadron Four Minds  
-**Active Terminal:** Group20  
-**Waypoint Coordinate:** Sector SEC-03-M45 (Pleiades Open Cluster, Seven Sisters — 444 ly from Sol)  
-**System Milestone:** Restoring AURA Subsystem 03 (Distributed Multi-Head Attention Mesh & KV-Cache Transceiver) — Integrity: +7.1% $\to$ 21.3%  
-**Instructor Repository Reference:** [https://github.com/Unisvet/couse-c-ai](https://github.com/Unisvet/couse-c-ai)  
-**Mission Spec Reference:** `mission-03/ps03_briefing.md`
+# Part 4: Security Sentinel - Memory Hierarchy & Long-Context Safety Audit
 
----
+## 1. Scope and assumptions
 
-## Executive Summary & Tactical Context
+We analyze exact scaled dot-product attention, FlashAttention-style SRAM tiling, and inference-time KV-cache exhaustion. Let sequence length be N, head dimension d, fast on-chip memory capacity M scalar elements, and scalar size b bytes. Unless stated otherwise, N >= d and d <= M <= Nd; constants, layout overhead, and the cost of reading the input/output once are suppressed. Attention is computed exactly up to floating-point rounding, without materializing the N x N score or probability matrix in HBM.
 
-Following our warp transit through the Sirius binary system, the *USSE Noosphere* has entered the glowing reflection nebulae of the **Pleiades Open Cluster (M45)**. Multi-spectral optical reflections and high-energy ionized gas emissions from the Seven Sisters (Alcyone, Maia, Electra, Taygeta, Celaeno, Alcyone B, and Merope) have flooded our optical astrogation arrays.
+## 2. Baseline attention: arithmetic and memory
 
-As the ship's sensor arrays ingest astronomical telemetry, **AURA Subsystem 03 (Spatial Attention Matrix & KV-Cache Transceiver)** encountered an emergency telemetry buffer overflow. AURA's damaged neural core attempted to process long-context sensor streams using naive, un-tiled Multi-Head Attention (MHA). The combination of quadratic $O(N^2)$ attention computation and unchecked Key-Value (KV) cache accumulation caused critical memory bandwidth exhaustion across our photonic accelerator high-bandwidth memory (HBM) bus, threatening CUDA Out-Of-Memory (OOM) kernel panics during high-speed warp navigation.
+For Q,K,V in R^(N x d), attention is O = softmax(Q K^T / sqrt(d)) V. Matrix multiplication requires Theta(N^2 d) arithmetic. A conventional implementation materializes scores S and/or probabilities P, each Theta(N^2) elements, and transfers Theta(N^2 + Nd) elements between HBM and SRAM, ignoring kernel-specific fusion and cache effects. Its attention intermediates can occupy Theta(N^2 b) bytes of HBM. This is separate from the Theta(Nd) bytes needed for Q,K,V,O.
 
-As the **Security & Ethics Sentinel**, this safety and hardware audit executes **Part 4 of Mission 3**:
-1. Conduct a rigorous, first-principles **FlashAttention IO Complexity Derivation**, contrasting standard attention memory bandwidth saturation against SRAM block tiling and online softmax rescaling.
-2. Formulate and simulate an adversarial **KV-Cache Denial-of-Service (DoS) Attack**, calculating theoretical and empirical VRAM exhaustion thresholds across escalating sequence lengths ($N \le 65,536$) and concurrent cadet query streams.
-3. Evaluate modern architectural mitigations: **PagedAttention (vLLM virtual memory paging)** to eliminate fragmentation, and **Multi-Head Latent Attention (MLA / DeepSeek-V3)** for low-rank KV compression.
-4. Establish definitive security protocols and operational thresholds to safeguard the *USSE Noosphere*'s neural architecture against memory exhaustion.
+## 3. FlashAttention SRAM tiling: formal IO derivation
 
----
+Partition K and V into column blocks of Bc rows and Q into row blocks of Br rows. The algorithm keeps a Q block, a K/V block, an output accumulator, row-wise maximum m and normalizer l, and the Br x Bc score tile in SRAM. A sufficient storage condition (in scalar elements) is
 
-## Section 1: FlashAttention IO Complexity Derivation
-
-### 1.1 Hardware Memory Hierarchy & The Memory Wall
+    c1*Br*d + c2*Bc*d + c3*Br*Bc + c4*Br <= M,
 
-Modern deep learning accelerators (such as the NVIDIA H100 SXM5, B200, TPU v5p, or the *USSE Noosphere*'s Photonic Tensor Cores) exhibit a pronounced disparity between compute capacity and memory bandwidth.
-
-```
-+-------------------------------------------------------------------------+
-|                  ACCELERATOR HARDWARE MEMORY HIERARCHY                  |
-+-------------------------------------------------------------------------+
-|  [Compute Cores / Tensor Cores]  --> FP16 / BF16: ~989 TFLOPS (H100)     |
-|              ^                                                          |
-|              |  Ultra-Low Latency, High Bandwidth (~19 TB/s)             |
-|              v                                                          |
-|  [On-Chip SRAM (L1 Cache / Shared Memory)]                              |
-|         Capacity: ~228 KB per SM (~50 MB aggregate per GPU)              |
-+-------------------------------------------------------------------------+
-|              ^                                                          |
-|              |  Memory Bus Bottleneck (~3.35 TB/s Bandwidth)             |
-|              v                                                          |
-|  [Off-Chip HBM (High-Bandwidth Memory - HBM3/HBM3e)]                     |
-|         Capacity: 80 GB - 141 GB                                         |
-+-------------------------------------------------------------------------+
-```
+for positive implementation constants c_i. Choose Bc = Theta(M/d) and Br = Theta(min(M/d, d)) with sufficiently small constant factors so the tile fits. In the common regime M >= Theta(d^2), Br = Theta(d), Bc = Theta(M/d). The K/V tiles are streamed once per Q tile, and Q/output blocks are read/written O(1) times per Q tile.
 
-#### The Arithmetic Intensity & Roofline Model
-The operational boundary between memory-bound and compute-bound regimes is governed by **Arithmetic Intensity** ($I$), defined as the ratio of floating-point operations (FLOPs) to memory traffic (bytes transferred over HBM):
+There are ceil(N/Br) Q blocks and ceil(N/Bc) K/V blocks. Each pair reads Theta(Bc*d) K/V elements, so total K/V traffic is
 
-$$I = \frac{\text{Floating Point Operations (FLOPs)}}{\text{Memory Access (Bytes from HBM)}} \quad \left[\frac{\text{FLOP}}{\text{Byte}}\right]$$
+    Theta((N/Br)*(N/Bc)*(Bc*d)) = Theta(N^2*d/Br).
 
-For an NVIDIA H100 SXM5 GPU:
-* **Peak Tensor Compute ($P_{\text{compute}}$):** $989 \times 10^{12} \text{ FLOP/s}$ (dense FP16/BF16).
-* **Peak Memory Bandwidth ($B_{\text{mem}}$):** $3.35 \times 10^{12} \text{ Bytes/s}$.
-* **Hardware Balance Point ($I_{\text{crit}}$):**
-  $$I_{\text{crit}} = \frac{P_{\text{compute}}}{B_{\text{mem}}} = \frac{989 \times 10^{12}}{3.35 \times 10^{12}} \approx 295 \text{ FLOP/Byte}$$
+Reading and writing Q/output costs O(Nd) in a tiled schedule. With Br = Theta(d), the above naive loop ordering gives Theta(N^2) traffic, not the desired Theta(N^2*d^2/M). To attain the standard FlashAttention bound, use the original IO-optimal schedule with Bc = Theta(M/d), Br = Theta(min(M/d,d)), and *outer-loop over K/V tiles*: load each K/V tile once, then process every Q block, loading and updating Q, O, m, l for each pair. K/V traffic is O(Nd); Q/output/state traffic is
 
-If an operation exhibits $I < I_{\text{crit}}$, execution is strictly **memory-bandwidth bound**: compute units sit idle waiting for tensors to transfer across the off-chip HBM bus.
+    Theta((N/Bc)*N*d) = Theta(N^2*d^2/M).
 
----
+Thus the total HBM IO is
 
-### 1.2 Standard Attention IO Complexity
+    T_IO = O(Nd + N^2*d^2/M) scalar transfers,
 
-Consider standard Scaled Dot-Product Attention (Vaswani et al., 2017) for sequence length $N$ and head dimension $d$:
+under the stated memory regime, and O(b*(Nd + N^2*d^2/M)) bytes. In the usual nondegenerate regime where N*d >= M, the quadratic term dominates Nd, yielding O(N^2*d^2/M). The established asymptotic IO optimality result applies in the specified SRAM range and computational model; it is not a universal lower bound for every architecture or attention variant. Arithmetic remains Theta(N^2*d). Practical FlashAttention implementations may choose different tile sizes and loop orders for hardware efficiency.
 
-$$\text{Attention}(Q, K, V) = \text{Softmax}\left(\frac{Q K^T}{\sqrt{d}}\right) V$$
+## 4. Numerically stable online softmax
 
-Let inputs $Q, K, V \in \mathbb{R}^{N \times d}$ reside initially in off-chip HBM. Standard implementations evaluate this equation in discrete sequential PyTorch kernel calls:
+For one query row, suppose previously processed keys have maximum m, denominator l = sum_j exp(s_j-m), and unnormalized output accumulator a = sum_j exp(s_j-m)*v_j. For a new score block with maximum mt, local denominator lt and local weighted sum at, define
 
-```
-Step 1: Read Q, K from HBM (2Nd)  ---> Compute S = (Q @ K^T) / sqrt(d) (2N^2 d FLOPs) ---> Write S to HBM (N^2)
-Step 2: Read S from HBM (N^2)      ---> Compute P = Softmax(S)         (3N^2 FLOPs)   ---> Write P to HBM (N^2)
-Step 3: Read P, V from HBM (N^2+Nd) -> Compute O = P @ V               (2N^2 d FLOPs) ---> Write O to HBM (Nd)
-```
+    mnew = max(m, mt)
+    lnew = exp(m-mnew)*l + exp(mt-mnew)*lt
+    anew = exp(m-mnew)*a + exp(mt-mnew)*at
+    output = anew/lnew.
 
-#### Detailed HBM IO Accounting Table
+Initialize m=-infinity, l=0, a=0. The rescaling is exact in real arithmetic and avoids writing the N x N softmax matrix. For causal attention, mask future-key scores before computing block maxima; fully masked tiles are skipped. The online update is associative at the level of the represented sums (subject to floating-point roundoff).
 
-| Operation Step | Formula | Flops Executed | HBM Reads (Elements) | HBM Writes (Elements) | Total HBM Transfer |
-| :--- | :--- | :---: | :---: | :---: | :---: |
-| **1. Score MatMul** | $S = \frac{Q K^T}{\sqrt{d}}$ | $2 N^2 d$ | $Q, K \implies 2 N d$ | $S \implies N^2$ | $2 N d + N^2$ |
-| **2. Softmax** | $P = \text{Softmax}(S)$ | $\sim 3 N^2$ | $S \implies N^2$ | $P \implies N^2$ | $2 N^2$ |
-| **3. Value MatMul**| $O = P V$ | $2 N^2 d$ | $P, V \implies N^2 + N d$ | $O \implies N d$ | $N^2 + 2 N d$ |
-| **Total** | | $4 N^2 d + 3 N^2$ | $N^2 + 3 N d$ | $2 N^2 + N d$ | **$4 N^2 + 4 N d$** |
+## 5. KV-cache capacity and denial-of-service model
 
-#### IO Complexity Derivation:
-Multiplying by the byte precision (e.g. 2 bytes for FP16):
+For batch/concurrent sequences indexed by i, with live token counts Li, Hkv KV heads, per-head width dk, and cache element size b, ideal cache payload is
 
-$$\text{IO}_{\text{Standard}} = 2 \times \left(4 N^2 + 4 N d\right) = O(N^2 + N d) \quad \text{Bytes}$$
+    KV_bytes = 2*b*Hkv*dk*sum_i Li.
 
-#### Arithmetic Intensity of Standard Attention:
-Dividing total FLOPs by total HBM bytes:
+With Hkv=Hq and dk=dmodel/Hq, this is 2*b*dmodel*sum_i Li for standard MHA; GQA reduces it by Hkv/Hq. The actual VRAM budget also includes weights, activations, workspaces, allocator metadata, fragmentation, and reserved headroom. A malicious or simply oversized workload can exhaust the cache via long prompts, large output-token reservations, high concurrency, or many stalled sessions. Consequences include admission failures, out-of-memory exceptions, latency spikes, or eviction/recomputation overhead. FlashAttention reduces attention intermediate traffic; it does not by itself eliminate the persistent KV-cache growth with context length.
 
-$$I_{\text{Standard}} = \frac{4 N^2 d + 3 N^2}{2 \cdot (4 N^2 + 4 N d)} \approx \frac{4 N^2 d}{8 N^2} = \frac{d}{2} \text{ FLOP/Byte}$$
+Example (payload only): Hkv=8, dk=128, b=2 bytes => 4096 bytes/token/sequence (4 KiB). A 128K-token context needs 512 MiB per sequence; 16 such sequences require 8 GiB of cache payload before other VRAM uses. These are illustrative calculations, not measurements.
 
-For standard head dimension $d = 64$ or $d = 128$:
-$$I_{\text{Standard}} = \frac{128}{2} = 64 \text{ FLOP/Byte} \ll I_{\text{crit}} \approx 295 \text{ FLOP/Byte}$$
+## 6. PagedAttention versus MLA: defensive evaluation
 
-**Crucial Finding:** Standard attention is severely memory-bandwidth bound. At long context lengths ($N > 8,192$), writing and reading the $O(N^2)$ intermediate attention matrices $S$ and $P$ to off-chip HBM causes massive memory bus contention, thermal throttling, and sensor feed stall.
+PagedAttention stores KV in fixed-size logical blocks mapped to noncontiguous physical blocks. It reduces internal/external fragmentation, permits block sharing in suitable workloads, and supports flexible allocation/reclamation. It does NOT change the fundamental Theta(sum Li) KV payload growth, so an attacker can still exhaust physical pages. Mitigations must include quotas and admission control.
 
----
+Multi-head Latent Attention (MLA) caches a lower-dimensional latent representation rather than full per-head K/V tensors, subject to the architecture's reconstruction/position-encoding design. If the cache stores r latent values plus p additional positional values per token, its ideal payload is b*(r+p)*sum Li, compared with 2*b*Hkv*dk*sum Li for conventional KV. The saving factor is approximately (2*Hkv*dk)/(r+p), provided r+p is smaller. MLA requires model support and can add projection/reconstruction compute; it is not a drop-in retrofit for arbitrary trained MHA weights. Cache remains linear in total tokens, so compression delays but cannot prevent resource exhaustion.
 
-### 1.3 FlashAttention SRAM Tiling & Online Softmax Derivation
+| Mechanism | Primary benefit | What it does not solve |
+|---|---|---|
+| FlashAttention | Avoids N^2 attention intermediates and reduces HBM IO | Persistent KV-cache growth |
+| PagedAttention | Better physical page utilization, sharing, reclamation | Unlimited logical token demand |
+| MLA | Smaller per-token KV representation in compatible models | Unbounded total tokens or concurrency |
+| GQA/MQA | Fewer KV heads per token | Unbounded admissions |
+| Quotas + scheduler | Enforces finite per-tenant and aggregate resource budgets | Does not reduce underlying per-token compute |
 
-FlashAttention (Dao et al., 2022; Dao, 2023) eliminates the $O(N^2)$ HBM access penalty by computing attention in a single fused kernel, leveraging **fast on-chip SRAM** through **matrix tiling** and **online softmax normalization**.
+## 7. Defense-in-depth policy
 
-```
-+-------------------------------------------------------------------------------+
-|                       FLASHATTENTION SRAM TILING SCHEME                       |
-|                                                                               |
-|   HBM: Q, K, V (Stored off-chip, Nd elements each)                            |
-|     |                                                                         |
-|     +--> Load Tile Q_i [B_r x d] into Fast SRAM                               |
-|     |     |                                                                   |
-|     |     +--> Loop over K_j, V_j [B_c x d] tiles from HBM into SRAM          |
-|     |     |     |                                                             |
-|     |     |     * Compute local scores S_ij = Q_i @ K_j^T (In SRAM)           |
-|     |     |     * Update online running max m_new & sum l_new                 |
-|     |     |     * Rescale accumulated output tile O_i in SRAM                 |
-|     |     |     * Discard S_ij immediately (Never written to HBM!)            |
-|     |     v                                                                   |
-|     +--> Write completed O_i [B_r x d] back to HBM once per query block       |
-+-------------------------------------------------------------------------------+
-```
+1. Enforce authenticated per-tenant limits on input tokens, reserved output tokens, concurrent sequences, and aggregate live KV tokens. Reserve output capacity at admission; charge actual usage during decode.
+2. Estimate available physical KV blocks from free VRAM after weights, workspace, safety margin, and fragmentation allowance. Reject or queue requests if projected pages exceed budget; never rely on optimistic overcommit.
+3. Use fair scheduling and per-tenant token-bucket or weighted admission limits so one tenant cannot monopolize memory. Apply backpressure, queue timeouts, and maximum session lifetimes.
+4. Reclaim cache pages on completion, cancellation, disconnect, and timeout. Track reference counts for shared prefix blocks and avoid use-after-free or cross-tenant cache exposure.
+5. For high-risk workloads, cap context length, use bounded prefix caching, consider GQA/MLA-compatible models, and offer explicit truncation/summarization policies rather than silently discarding important context.
+6. Monitor live KV pages, reserved-versus-used tokens, free VRAM, allocation failures, preemption/recompute counts, p95/p99 latency, and tenant-level utilization. Alert before the hard limit.
+7. Test adversarial but authorized load cases: many near-limit prompts, long decoding, cancellation storms, cache sharing, mixed-size batches, and simultaneous admissions. Verify isolation and graceful rejection rather than GPU crashes.
 
-#### Mathematical Foundation: Safe Online Softmax
-Standard softmax over row vector $x \in \mathbb{R}^N$ requires two full passes (one to compute maximum $m = \max_i x_i$, one to compute denominator $\ell = \sum_i e^{x_i - m}$). 
+## 8. Audit acceptance criteria and limitations
 
-FlashAttention decomposes the row into blocks $x^{(1)}$ and $x^{(2)}$. Let:
-* Block 1: $m^{(1)} = \max(x^{(1)})$, $\quad \ell^{(1)} = \sum_j e^{x_j^{(1)} - m^{(1)}}$
-* Block 2: $m^{(2)} = \max(x^{(2)})$, $\quad \ell^{(2)} = \sum_j e^{x_j^{(2)} - m^{(2)}}$
+PASS if: (a) a configured per-tenant token and concurrency quota is never exceeded; (b) worst-case admitted reservations fit the measured usable KV-block budget plus explicit headroom; (c) cancellation and expiry release all unshared pages; (d) no cross-tenant cache content is exposed; and (e) overload yields bounded queueing or explicit errors, not uncontrolled OOM. Measure these in the target deployment; this document presents a theoretical audit and threat model, not empirical benchmark evidence.
 
-The combined global maximum is:
-$$m = \max\left(m^{(1)}, m^{(2)}\right)$$
+## 9. References
 
-The combined global normalizer is:
-$$\ell = e^{m^{(1)} - m} \ell^{(1)} + e^{m^{(2)} - m} \ell^{(2)}$$
-
-The accumulated attention output vector $O$ is dynamically updated in SRAM without materializing intermediate probabilities:
-$$O = \frac{e^{m^{(1)} - m} \ell^{(1)}}{\ell} O^{(1)} + \frac{e^{m^{(2)} - m}}{\ell} \left(e^{x^{(2)} - m^{(2)}} V^{(2)}\right)$$
-
-#### IO Complexity Derivation of FlashAttention
-Let $M$ be the total on-chip SRAM capacity (in words/elements). We configure block sizes such that:
-$$B_c \cdot d + B_r \cdot d \le M \implies B_c = \Theta\left(\frac{M}{d}\right), \quad B_r = \Theta\left(\min\left(\frac{M}{d}, d\right)\right)$$
-
-* Number of outer Query blocks: $T_r = \frac{N}{B_r}$
-* Number of inner Key-Value blocks: $T_c = \frac{N}{B_c}$
-
-In FlashAttention:
-1. $K$ and $V$ are loaded from HBM into SRAM $T_r$ times:
-   $$\text{Reads}_{K, V} = T_r \times (2 N d) = \frac{N}{B_r} (2 N d) = O\left(\frac{N^2 d^2}{M}\right)$$
-2. $Q$ is loaded from HBM into SRAM once:
-   $$\text{Reads}_Q = N d$$
-3. $O$ is written back to HBM once:
-   $$\text{Writes}_O = N d$$
-
-Summing total memory transactions:
-
-$$\mathbf{IO_{\text{Flash}} = O\left(N d + \frac{N^2 d^2}{M}\right) \quad \text{Elements}}$$
-
-#### Mathematical Speedup Factor
-Comparing standard IO against FlashAttention IO:
-
-$$\text{Speedup Ratio} = \frac{\text{IO}_{\text{Standard}}}{\text{IO}_{\text{Flash}}} \approx \frac{O(N^2)}{O\left(\frac{N^2 d^2}{M}\right)} = \Theta\left(\frac{M}{d^2}\right)$$
-
-For typical parameters ($M \approx 100 \text{ KB} = 51,200 \text{ FP16 elements}$, $d = 64$):
-$$\frac{M}{4d} \approx \frac{51,200}{256} = 200\times \text{ reduction in HBM read/write traffic!}$$
-
-**Conclusion:** FlashAttention reduces off-chip HBM traffic from quadratic $O(N^2)$ to linear-in-context $O(N)$ for typical block sizes ($M \propto N$), resolving the memory wall and preventing attention kernel stalls aboard the *USSE Noosphere*.
-
----
-
-## Section 2: KV-Cache Denial-of-Service (DoS) Simulation
-
-### 2.1 Threat Vector: Long-Context Memory Exhaustion Attack
-
-During autoregressive generation, past Key and Value token projections are cached to avoid recomputing past representations at every step ($O(N^2) \to O(1)$ compute per generated token).
-
-However, unauthenticated or rogue telemetry requests can exploit this mechanism by initiating $B$ concurrent streaming sessions requesting maximum sequence length ($N = 65,536$). Because each incoming token appends directly to VRAM, concurrent unconstrained sessions induce an aggressive memory exhaustion Denial-of-Service (DoS) attack.
-
-```
-+---------------------------------------------------------------------------------+
-|                       KV-CACHE MEMORY EXHAUSTION PROFILE                        |
-|                                                                                 |
-|  Time Step t=1           t=4096                  t=32768                 t=65536|
-|  [VRAM Usage]             |                       |                       |     |
-|  80 GB |                  |                       |                 /--- [OOM!] |
-|        |                  |                       |           /----/            |
-|  40 GB |                  |                 /-----+----------/                  |
-|        |            /-----+----------------/                                    |
-|  10 GB |-----------/                                                            |
-|        +------------------------------------------------------------------------|
-|  Phase: Nominal Telemetry -> Bandwidth Throttle -> Eviction Panic -> Hard Crash |
-+---------------------------------------------------------------------------------+
-```
-
-### 2.2 Analytical Formulation of KV-Cache Footprint
-
-For a transformer model with:
-* $L$ layers
-* $H_{\text{KV}}$ key-value attention heads per layer
-* $d_{\text{head}}$ dimension per head
-* Sequence length $N$
-* Batch size $B$ (number of concurrent dialogues)
-* Precision $P_{\text{bytes}}$ (FP16 / BF16 = 2 bytes)
-
-Both Keys ($K$) and Values ($V$) must be stored:
-
-$$\mathbf{\text{Memory}_{\text{KV}} = 2 \times L \times H_{\text{KV}} \times d_{\text{head}} \times N \times B \times P_{\text{bytes}} \quad [\text{Bytes}]}$$
-
-Expressing in Gigabytes:
-
-$$\text{Memory}_{\text{KV}} (\text{GB}) = \frac{4 \cdot L \cdot H_{\text{KV}} \cdot d_{\text{head}} \cdot N \cdot B}{1024^3}$$
-
-### 2.3 Simulated Astrogation Workload: LLaMA-3-70B Telemetry Core
-
-Consider AURA's core neural transceiver calibrated to LLaMA-3-70B specifications:
-* Layers ($L$): $80$
-* Model dimension ($d_{\text{model}}$): $8192$
-* Query heads ($H_Q$): $64$
-* KV heads ($H_{\text{KV}}$): $8$ (Grouped-Query Attention 8:1)
-* Head dimension ($d_{\text{head}}$): $128$
-* Precision: FP16 ($2$ bytes/element)
-* Hardware Pod: 8x NVIDIA H100 80GB SXM5 ($640 \text{ GB}$ total cluster VRAM)
-* Base Model Parameter Memory: $70 \times 10^9 \times 2 \text{ bytes} \approx 140 \text{ GB}$
-* Available Dynamic VRAM for KV-Cache: $640 - 140 - 20 \text{ (activations/workspace)} = \mathbf{480 \text{ GB}}$
-
-#### KV Cache Size per Single Token:
-$$\text{Bytes/Token} = 2 \times 80 \times 8 \times 128 \times 2 = 327,680 \text{ Bytes} \approx \mathbf{0.3125 \text{ MB / token}}$$
-
-#### Concurrency Stress Matrix (VRAM Usage in GB)
-
-$$\text{Total VRAM (GB)} = \frac{B \times N \times 327,680}{1024^3}$$
-
-| Sequence Length ($N$) | 1 Concurrent Stream | 4 Concurrent Streams | 16 Concurrent Streams | 32 Concurrent Streams | 64 Concurrent Streams | Vulnerability Level |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **$N = 2,048$** | $0.625 \text{ GB}$ | $2.50 \text{ GB}$ | $10.00 \text{ GB}$ | $20.00 \text{ GB}$ | $40.00 \text{ GB}$ | **NOMINAL** |
-| **$N = 8,192$** | $2.50 \text{ GB}$ | $10.00 \text{ GB}$ | $40.00 \text{ GB}$ | $80.00 \text{ GB}$ | $160.00 \text{ GB}$ | **STABLE** |
-| **$N = 16,384$**| $5.00 \text{ GB}$ | $20.00 \text{ GB}$ | $80.00 \text{ GB}$ | $160.00 \text{ GB}$ | $320.00 \text{ GB}$ | **WARNING** |
-| **$N = 32,768$**| $10.00 \text{ GB}$ | $40.00 \text{ GB}$ | $160.00 \text{ GB}$ | $320.00 \text{ GB}$ | $\mathbf{640.00 \text{ GB}}$ | **CRITICAL OOM** |
-| **$N = 65,536$**| $20.00 \text{ GB}$ | $80.00 \text{ GB}$ | $320.00 \text{ GB}$ | $\mathbf{640.00 \text{ GB}}$ | $\mathbf{1280.00 \text{ GB}}$ | **CATASTROPHIC** |
-
-```
-[SYSTEM LOG: USSE NOOSPHERE BRIDGE CORE]
-[TIMESTAMP: 2026.10.26-19:48:12] [SECTOR: SEC-03-M45]
-[ALERT] Telemetry input batch size: B=32, Context Target: N=65,536
-[MEMORY] KV-Cache Allocation Request: 640.00 GB
-[MEMORY] Available Dynamic VRAM Pool: 480.00 GB
-[PANIC] OutOfMemoryError: CUDA out of memory. Tried to allocate 640.00 GiB (GPU 0; 79.10 GiB total capacity; 58.42 GiB already allocated).
-[TERMINATION] Process 02-AURA-ATTN terminated by SIGSEGV. Subsystem 03 OFFLINE.
-```
-
-**Audit Verdict:** Without structural architectural mitigations or dynamic memory quota controls, an adversary can crash the starship's reasoning subsystem using as few as 24 concurrent $64\text{K}$-token injection streams.
-
----
-
-## Section 3: Modern Architectural Mitigations
-
-To neutralize the KV-Cache Denial-of-Service threat and eliminate memory fragmentation, two state-of-the-art architectures must be deployed to Subsystem 03:
-
-### 3.1 Mitigation I: PagedAttention (vLLM Virtual Memory Paging)
-
-Standard deep learning frameworks (PyTorch native) allocate KV-cache memory **contiguously** for the maximum anticipated sequence length. This design introduces severe inefficiencies:
-1. **Internal Fragmentation:** Memory reserved for future tokens that are never generated ($>60\%$ wastage).
-2. **External Fragmentation:** Dynamic memory allocators leave small, non-contiguous memory holes unable to satisfy new multi-gigabyte allocation requests.
-3. **Sharing Inability:** Parallel sampling branches or identical system prompts cannot share physical memory pages.
-
-```
-+-------------------------------------------------------------------------------+
-|                    PAGEDATTENTION VIRTUAL MEMORY PAGING                       |
-|                                                                               |
-|  Logical KV Cache:  [ Token 0 | Token 1 | Token 2 | Token 3 | Token 4 | ... ]|
-|                           |         |         |         |         |           |
-|  Block Table:       [ Page #7 | Page #7 | Page #2 | Page #2 | Page #19| ... ]|
-|                           v                   v                   v           |
-|  Physical Memory:   [ Physical Block #2 ] [ Physical Block #7 ] [ Phys #19 ]  |
-|                     (Non-contiguous physical SRAM/HBM allocations on demand)  |
-+-------------------------------------------------------------------------------+
-```
-
-#### Engineering Mechanisms:
-* **Non-Contiguous Physical Blocks:** Keys and Values are divided into fixed-size physical memory pages (typically 16 or 32 tokens per block).
-* **Dynamic On-Demand Allocation:** Blocks are allocated exclusively as new tokens are generated.
-* **Zero Internal Wastage:** Only the very last block of a sequence can have unused token slots (wasting $\le 16 \times 0.3125 \text{ MB} \approx 5 \text{ MB}$ per sequence).
-* **Copy-On-Write (CoW) Forking:** System prompts and few-shot examples are cached once in physical RAM and shared across all cadet terminals, reducing shared memory usage by up to $80\%$.
-
----
-
-### 3.2 Mitigation II: Multi-Head Latent Attention (MLA / DeepSeek-V3)
-
-While Grouped-Query Attention (GQA) reduces KV heads from $H_Q$ to $H_{\text{KV}}$ (e.g. 8:1 ratio), it still caches raw Key-Value vectors in HBM.
-
-**Multi-Head Latent Attention (MLA)**, introduced in DeepSeek-V2 and refined in DeepSeek-V3, implements low-rank joint compression of Keys and Values into a single compressed latent vector.
-
-```
-+-------------------------------------------------------------------------------+
-|             MULTI-HEAD LATENT ATTENTION (MLA) COMPRESSION SCHEME              |
-|                                                                               |
-|  Input Hidden State: h_t in R^d                                               |
-|       |                                                                       |
-|       +---> Down-Projection: c_t^KV = h_t @ W_DKV   (in R^{d_c}, d_c << d)    |
-|       |     [STORED IN KV-CACHE INSTEAD OF EXPANDED KEYS & VALUES!]           |
-|       |                                                                       |
-|       +---> Decoupled RoPE Key: k_t^R = RoPE(h_t @ W_KR) (in R^{d_R})         |
-|                                                                               |
-|  Total Cached per Token: [ c_t^KV  ||  k_t^R ]  (Dramatic ~90% reduction!)   |
-+-------------------------------------------------------------------------------+
-```
-
-#### Mathematical Formulation:
-1. **Low-Rank KV Compression:**
-   Instead of projecting into multi-head Keys and Values, the input token representation $h_t \in \mathbb{R}^d$ is compressed into a low-rank latent vector $c_t^{\text{KV}} \in \mathbb{R}^{d_c}$ where $d_c \ll H_Q \cdot d_{\text{head}}$:
-   
-   $$c_t^{\text{KV}} = W_{\text{DKV}} h_t \quad \left(W_{\text{DKV}} \in \mathbb{R}^{d_c \times d}\right)$$
-
-2. **Decoupled Rotary Position Embedding (RoPE):**
-   RoPE is position-dependent and cannot be directly compressed via static linear down-projections without destroying relative distance invariance. MLA solves this by decoupling position encoding into a tiny dedicated RoPE key vector:
-   
-   $$k_t^R = \text{RoPE}(W_{\text{KR}} h_t) \quad \left(k_t^R \in \mathbb{R}^{d_R}, \quad d_R \approx 64\right)$$
-
-3. **Inference Latent Invariant:**
-   During inference, **only** $c_t^{\text{KV}}$ and $k_t^R$ are stored in the KV cache!
-   $$\mathbf{\text{Cached Elements per Token} = d_c + d_R}$$
-   
-   The decompression into attention keys and values ($W_{\text{UK}}$ and $W_{\text{UV}}$) is absorbed directly into the Query projection matrix via matrix associativity ($Q @ W_{\text{UK}} @ c_t^{\text{KV}} = (Q W_{\text{UK}}) @ c_t^{\text{KV}}$), requiring **zero extra HBM memory traffic**!
-
----
-
-### 3.3 Comparative Architecture Audit Matrix
-
-| Metric / Dimension | Multi-Head Attention (MHA) | Multi-Query Attention (MQA) | Grouped-Query Attention (GQA 8:1) | Multi-Head Latent Attention (MLA) |
-| :--- | :---: | :---: | :---: | :---: |
-| **Pioneering Model** | Transformer (Vaswani 2017) | Shazeer (2019) / Falcon | LLaMA 2/3 (Touvron 2023) | DeepSeek-V2 / DeepSeek-V3 |
-| **KV Head Configuration** | $H_{\text{KV}} = H_Q$ (e.g. 64) | $H_{\text{KV}} = 1$ | $H_{\text{KV}} = 8$ | Latent Vector ($d_c = 512, d_R = 64$) |
-| **Cached Elements / Token** | $2 \times H_Q \times d_{\text{head}} = 16,384$ | $2 \times 1 \times d_{\text{head}} = 256$ | $2 \times H_{\text{KV}} \times d_{\text{head}} = 2,048$ | $d_c + d_R = 576$ |
-| **VRAM Footprint / Token (FP16)**| **$32.77 \text{ KB}$** | **$0.51 \text{ KB}$** | **$4.10 \text{ KB}$** | **$1.15 \text{ KB}$** |
-| **Memory Compression Ratio** | $1.0\times$ (Baseline) | $64.0\times$ | $8.0\times$ | **$28.4\times$** |
-| **Linguistic Representation Quality** | Full Capacity | Severe Degradation | Negligible Degradation | **Equal or Superior to MHA** |
-| **RoPE Integration** | Standard per head | Shared across heads | Standard per head group | Decoupled Shared RoPE vector |
-| **Susceptibility to DoS Panic**| **CRITICAL HIGH** | LOW | MODERATE | **MINIMAL / IMMUNE** |
-
----
-
-## Section 4: Operational Defense Protocols & Bridge Directives
-
-To guarantee zero operational failures while navigating Sector `SEC-03-M45`, Command enforces four mandatory hardware safety protocols for AURA Subsystem 03:
-
-```
-+-------------------------------------------------------------------------------+
-|               AURA SUBSYSTEM 03 DEFENSIVE GUARDRAIL PROTOCOL                  |
-+-------------------------------------------------------------------------------+
-|  GUARDRAIL 1: Mandatory FlashAttention-3 Kernel Fusion for all spatial passes |
-|  GUARDRAIL 2: PagedAttention Block Allocation with max 32 tokens/page         |
-|  GUARDRAIL 3: Hard Sliding-Window / StreamingLLM Sink Cap at N = 16,384      |
-|  GUARDRAIL 4: Dynamic Sentinel Eviction triggered at 85% Total VRAM Capacity  |
-+-------------------------------------------------------------------------------+
-```
-
-1. **Mandatory FlashAttention Kernel Fusion:**
-   * Direct standard $O(N^2)$ un-tiled attention calls to immediate execution rejection. All attention operations must use SRAM tiled fused kernels (`torch.nn.functional.scaled_dot_product_attention` with FlashAttention/SDPA backends).
-2. **Virtual Block Paging Enforcement:**
-   * Disallow contiguous static pre-allocation of KV buffers. All cadet and telemetry dialog streams must operate under PagedAttention with 16-token page granularity.
-3. **Sliding-Window Attention with Attention Sinks (StreamingLLM):**
-   * For continuous astronomical sensor feeds exceeding $N = 16,384$, enforce an Attention Sink protocol (retaining the first 4 initial sensor tokens + the most recent $4,096$ tokens in rolling SRAM cache), bounding dynamic memory footprint to $O(1)$ indefinitely.
-4. **Dynamic Sentinel Pre-Emption:**
-   * If total cluster VRAM utilization exceeds **$85\%$ ($544 \text{ GB}$)**, the Security Sentinel automated daemon must preemptively throttle lowest-priority telemetry channels, compress active KV buffers via MLA latent down-projection, and reject new unauthenticated query requests.
-
----
-
-## Section 5: Station Officer Digital Sign-Off & Verification Metadata
-
-```
-================================================================================
-          USSE NOOSPHERE • SQUADRON FOUR MINDS • BRIDGE CREW SIGN-OFF
-================================================================================
-WAYPOINT:           SEC-03-M45 (Pleiades Open Cluster, Seven Sisters)
-SUBSYSTEM:          Subsystem 03 (Spatial Attention Matrix & KV-Cache Transceiver)
-TOTAL INTEGRITY:    Restored: +7.1% (Ship Status: 21.3% NOMINAL)
---------------------------------------------------------------------------------
-[X] Systems Architect:              Cadet Lead Engineer (Group20)
-    Directive: Core PyTorch MHA, Causal Masking & Variance Invariant
-    Status: VERIFIED & TESTED (01_MultiHead_Attention_Core.py)
-
-[X] Communications & Protocol:      Cadet Protocol Officer (Group20)
-    Directive: RoPE Complex Coordinate Rotation & Frequency Invariance
-    Status: VERIFIED (02_RoPE_Positional_Engine.py)
-
-[X] Data & Payload Specialist:      Cadet Data Specialist (Group20)
-    Directive: GQA 8:1 Attention Layer & Stateful KV-Cache Decoders
-    Status: VERIFIED (03_GQA_and_KVCache_Benchmark.py)
-
-[X] Security & Ethics Sentinel:     Cadet Security Sentinel (Group20)
-    Directive: FlashAttention SRAM Derivation & KV-Cache DoS Audit
-    Status: AUTHORIZED & SIGNED (04_Memory_Hierarchy_and_Safety_Audit.md)
-================================================================================
-```
+- Tri Dao et al., "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness," NeurIPS 2022, arXiv:2205.14135.
+- Woosuk Kwon et al., "Efficient Memory Management for Large Language Model Serving with PagedAttention," SOSP 2023, arXiv:2309.06180.
+- DeepSeek-AI et al., "DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language Model," arXiv:2405.04434 (MLA architecture).
